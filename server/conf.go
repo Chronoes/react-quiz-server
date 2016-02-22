@@ -20,7 +20,7 @@ func (env *Env) InitDB(dialect string, options string) error {
 	if err != nil {
 		return err
 	}
-	db.AutoMigrate(&Quiz{}, &Question{}, &QuestionChoice{}, &QuestionAnswer{}, &User{}, &UserAnswer{})
+	db.AutoMigrate(&Quiz{}, &Question{}, &QuestionChoice{}, &User{}, &UserAnswer{})
 	if err = db.Close(); err != nil {
 		return err
 	}

@@ -1,6 +1,8 @@
 package server
 
 import (
+	"database/sql"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -9,11 +11,7 @@ type QuestionChoice struct {
 	ID         uint   `json:"id" gorm:"primary_key"`
 	QuestionID uint   `json:"-" gorm:"primary_key"`
 	Value      string `json:"value" sql:"type:text"`
-}
-
-type QuestionAnswer struct {
-	QuestionID uint
-	ChoiceID   uint
+	IsAnswer   bool   `json:"-"`
 }
 
 type Question struct {
@@ -22,35 +20,23 @@ type Question struct {
 	Type     string           `json:"type"`
 	Question string           `json:"question"`
 	Choices  []QuestionChoice `json:"choices"`
-	Answers  []QuestionAnswer `json:"-"`
 }
 
-func (question *Question) QueryAnswers(orm ORM) {
-	orm.DB.Model(question).Related(&question.Answers)
-}
-
-func (question Question) QueryAnswerChoices(orm ORM) (choices []QuestionChoice) {
-	if len(question.Answers) > 0 {
-		ids := make([]uint, len(question.Answers))
-		for i, answer := range question.Answers {
-			ids[i] = answer.ChoiceID
-		}
-		orm.DB.Where(ids).Find(&choices)
-	}
-	return
+func (question *Question) QueryChoices(orm ORM) {
+	orm.DB.Model(question).Related(&question.Choices)
 }
 
 func (question Question) isCorrectMultiAnswer(answerId uint) bool {
-	for _, answer := range question.Answers {
-		if answer.ChoiceID == answerId {
+	for _, choice := range question.Choices {
+		if choice.IsAnswer && choice.ID == answerId {
 			return true
 		}
 	}
 	return false
 }
 
-func (question Question) isCorrectFillBlankAnswer(choices []QuestionChoice, userAnswer string) bool {
-	for _, choice := range choices {
+func (question Question) isCorrectStringAnswer(userAnswer string) bool {
+	for _, choice := range question.Choices {
 		if userAnswer == choice.Value {
 			return true
 		}
@@ -82,62 +68,63 @@ func (quiz *Quiz) QueryQuestions(orm ORM) {
 }
 
 type UserAnswer struct {
-	UserID     uint   `json:"-"`
-	QuestionID uint   `json:"questionId"`
-	Value      string `json:"value" sql:"type:text"`
+	UserID     uint         `json:"-"`
+	QuestionID uint         `json:"questionId"`
+	Value      string       `json:"value" sql:"type:text"`
+	Correct    sql.NullBool `json:"correct"`
 }
 
-type SaveAnswerFunc func(ORM, Question, []interface{}) bool
+type CheckAnswerFunc func(Question, []interface{}, chan<- UserAnswer, chan<- bool)
 
-func (userAnswer UserAnswer) saveCheckboxAnswer(orm ORM, question Question, answers []interface{}) (correct bool) {
-	correct = true
-	ids := make([]string, len(answers))
-	for i, answer := range answers {
-		choiceId := uint(answer.(float64))
-		ids[i] = string(choiceId)
-		if correct && !question.isCorrectMultiAnswer(choiceId) {
-			correct = false
+func (userAnswer UserAnswer) checkByChoiceID(question Question, answers []interface{}, out chan<- UserAnswer, correct chan<- bool) {
+	isCorrect := true
+	for _, answer := range answers {
+		switch value := answer.(type) {
+		case float64:
+			choiceId := uint(value)
+			userAnswer.Correct.Bool = question.isCorrectMultiAnswer(choiceId)
+			if !userAnswer.Correct.Bool {
+				isCorrect = false
+			}
+			userAnswer.Correct.Valid = true
+			userAnswer.Value = strconv.Itoa(int(choiceId))
+			out <- userAnswer
+		default:
+			out <- UserAnswer{QuestionID: 0}
 		}
 	}
-	userAnswer.Value = strings.Join(ids, ",")
-	orm.DB.Create(&userAnswer)
-	return
+	correct <- isCorrect
 }
 
-func (userAnswer UserAnswer) saveRadioAnswer(orm ORM, question Question, answers []interface{}) (correct bool) {
-	value := uint(answers[0].(float64))
-	correct = question.isCorrectMultiAnswer(value)
-	userAnswer.Value = string(value)
-	orm.DB.Create(&userAnswer)
-	return
-}
-
-func (userAnswer UserAnswer) saveFillBlankAnswer(orm ORM, question Question, answers []interface{}) (correct bool) {
-	correct = true
-	choices := question.QueryAnswerChoices(orm)
+func (userAnswer UserAnswer) checkByString(question Question, answers []interface{}, out chan<- UserAnswer, correct chan<- bool) {
+	isCorrect := true
 	for _, answer := range answers {
 		blankAnswer := strings.TrimSpace(answer.(string))
-		if correct && !question.isCorrectFillBlankAnswer(choices, blankAnswer) {
-			correct = false
+		userAnswer.Correct.Bool = question.isCorrectStringAnswer(blankAnswer)
+		if !userAnswer.Correct.Bool {
+			isCorrect = false
 		}
+		userAnswer.Correct.Valid = true
 		userAnswer.Value = blankAnswer
-		orm.DB.Create(&userAnswer)
+		out <- userAnswer
 	}
-	return
+	correct <- isCorrect
 }
 
-func (userAnswer UserAnswer) saveTextAreaAnswer(orm ORM, question Question, answers []interface{}) bool {
-	value := answers[0].(string)
-	userAnswer.Value = value
-	orm.DB.Create(&userAnswer)
-	return false
+func (userAnswer UserAnswer) saveTextAreaAnswer(question Question, answers []interface{}, out chan<- UserAnswer, correct chan<- bool) {
+	userAnswer.Value = strings.TrimSpace(answers[0].(string))
+	userAnswer.Correct.Valid = false
+	out <- userAnswer
+	correct <- false
 }
 
 type User struct {
 	ID        uint         `json:"id" gorm:"primary_key"`
 	CreatedAt time.Time    `json:"createdAt"`
+	UpdatedAt time.Time    `json:"updatedAt"`
 	Name      string       `json:"name"`
 	Quiz      Quiz         `json:"-"`
 	QuizID    uint         `json:"quizId"`
+	TimeSpent uint         `json:"timeSpent"`
 	Answers   []UserAnswer `json:"answers"`
 }
