@@ -8,13 +8,13 @@ import (
 	"net/http"
 )
 
-func getActiveQuiz(db gorm.DB) (quiz *Quiz) {
+func getActiveQuiz(db *gorm.DB) (quiz *Quiz) {
 	db.Where("status = ?", "active").First(quiz)
 	quiz.queryQuestions(db)
 	return
 }
 
-func addNewUser(db gorm.DB, name string, quizID uint) (user *User) {
+func addNewUser(db *gorm.DB, name string, quizID uint) (user *User) {
 	user.Name = name
 	user.QuizID = quizID
 	db.Create(user)
@@ -58,20 +58,45 @@ type quizResults struct {
 	TimeSpent uint
 	Questions []struct {
 		ID     uint
-		Answer []interface{}
+		Answer interface{}
 	}
 }
 
-func (results quizResults) parseAndSaveAnswers(db gorm.DB) (correctAnswers uint) {
-	processedAnswers := make(chan Useranswer)
+func filterAnswers(answers interface{}) (interface{}, int) {
+	switch value := answers.(type) {
+	case string:
+		return value, 1
+	case float64:
+		return value, 1
+	case []interface{}:
+		var filtered []interface{}
+		for _, answer := range value {
+			newValue, _ := filterAnswers(answer)
+			if newValue != nil {
+				filtered = append(filtered, newValue)
+			}
+		}
+		return filtered, len(filtered)
+	}
+	return nil, 0
+}
+
+func (results quizResults) parseAndSaveAnswers(db *gorm.DB) (correctAnswers int) {
+	processedAnswers := make(chan UserAnswerer)
 	correct := make(chan bool)
 	maxAnswers := len(results.Questions)
 	for _, question := range results.Questions {
-		origQuestion := new(Question)
-		db.First(origQuestion, question.ID)
+		filtered, count := filterAnswers(question.Answer)
+		if filtered == nil {
+			continue
+		}
+		maxAnswers += count
+
+		origQuestion := Question{}
+		db.First(&origQuestion, question.ID)
 
 		queryChoices := true
-		var userAnswer Useranswer
+		var userAnswer UserAnswerer
 		switch origQuestion.Type {
 		case "checkbox":
 			fallthrough
@@ -88,15 +113,14 @@ func (results quizResults) parseAndSaveAnswers(db gorm.DB) (correctAnswers uint)
 			origQuestion.queryChoices(db)
 		}
 
-		maxAnswers += len(question.Answer)
-		go userAnswer.save(*origQuestion, question.Answer, processedAnswers, correct)
+		go userAnswer.Save(origQuestion, filtered, processedAnswers, correct)
 	}
 
 	transact := db.Begin()
 	for i := 0; i < maxAnswers; i++ {
 		select {
 		case userAnswer := <-processedAnswers:
-			if userAnswer.validate() {
+			if userAnswer.Validate() {
 				transact.Create(&userAnswer)
 			}
 		case isCorrect := <-correct:
@@ -111,7 +135,7 @@ func (results quizResults) parseAndSaveAnswers(db gorm.DB) (correctAnswers uint)
 	return
 }
 
-func (results quizResults) saveUserTime(db gorm.DB) {
+func (results quizResults) saveUserTime(db *gorm.DB) {
 	db.First(&User{}, results.UserID).Update("time_spent", results.TimeSpent)
 }
 

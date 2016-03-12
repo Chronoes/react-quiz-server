@@ -18,8 +18,8 @@ func main() {
 		return
 	}
 	router := httprouter.New()
-	router.GET("/api/test", env.APIDefaults(env.ServeQuiz))
-	router.POST("/api/test", env.APIDefaults(env.AcceptQuizAnswers))
+	router.GET("/api/quiz", env.APIDefaults(env.ServeQuiz))
+	router.POST("/api/quiz", env.APIDefaults(env.AcceptQuizAnswers))
 	router.NotFound = http.FileServer(http.Dir("static/"))
 	log.Println("Listening on 8080")
 	log.Fatal(http.ListenAndServe(":8080", router))

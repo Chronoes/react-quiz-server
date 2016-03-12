@@ -39,7 +39,7 @@ func (env Env) APIDefaults(handler httprouter.Handle) httprouter.Handle {
 	}
 }
 
-func (env Env) openDB() (db gorm.DB, err error) {
+func (env Env) openDB() (db *gorm.DB, err error) {
 	db, err = gorm.Open(env.DBDialect, env.DBOptions)
 	if !env.Production {
 		db.LogMode(true)
