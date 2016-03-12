@@ -2,32 +2,34 @@ package server
 
 import (
 	"encoding/json"
+	"github.com/jinzhu/gorm"
 	"github.com/julienschmidt/httprouter"
 	"log"
 	"net/http"
 )
 
-func (orm ORM) getActiveQuiz() (quiz *Quiz) {
-	quiz = new(Quiz)
-	orm.DB.Where("status = ?", "active").First(quiz)
-	quiz.QueryQuestions(orm)
+func getActiveQuiz(db gorm.DB) (quiz *Quiz) {
+	db.Where("status = ?", "active").First(quiz)
+	quiz.queryQuestions(db)
 	return
 }
 
-func (orm ORM) addNewUser(name string, quizId uint) (user *User) {
-	user = &User{Name: name, QuizID: quizId}
-	orm.DB.Create(user)
+func addNewUser(db gorm.DB, name string, quizID uint) (user *User) {
+	user.Name = name
+	user.QuizID = quizID
+	db.Create(user)
 	return
 }
 
-func (env Env) ServeTest(res http.ResponseWriter, req *http.Request, _ httprouter.Params) {
-	orm, err := env.OpenDB()
+// ServeQuiz serves currently active test to an user and registers their name to DB
+func (env Env) ServeQuiz(res http.ResponseWriter, req *http.Request, _ httprouter.Params) {
+	db, err := env.openDB()
 	if err != nil {
 		http.Error(res, "Something happened", 500)
 		log.Printf("Database opening failed: %v", err)
 		return
 	}
-	defer orm.DB.Close()
+	defer db.Close()
 	if err = req.ParseForm(); err != nil {
 		http.Error(res, "Error parsing request", 400)
 		log.Printf("Parsing request failed: %v", err)
@@ -38,66 +40,63 @@ func (env Env) ServeTest(res http.ResponseWriter, req *http.Request, _ httproute
 		http.Error(res, "Required parameter name", 400)
 		return
 	}
-	quiz := orm.getActiveQuiz()
-	user := orm.addNewUser(userName, quiz.ID)
-	quizJson, _ := json.Marshal(struct {
+	quiz := getActiveQuiz(db)
+	user := addNewUser(db, userName, quiz.ID)
+	quizJSON, _ := json.Marshal(struct {
 		*Quiz
 		UserID uint `json:"userId"`
 	}{
 		Quiz:   quiz,
 		UserID: user.ID,
 	})
-	res.Write(quizJson)
+	res.Write(quizJSON)
 	log.Printf("Test ID %d served", quiz.ID)
 }
 
-type TestResults struct {
+type quizResults struct {
 	UserID    uint
 	TimeSpent uint
 	Questions []struct {
-		ID      uint
-		Answers []interface{}
+		ID     uint
+		Answer []interface{}
 	}
 }
 
-func (results TestResults) parseAndSaveAnswers(orm ORM) (correctAnswers uint) {
-	processedAnswers := make(chan UserAnswer)
+func (results quizResults) parseAndSaveAnswers(db gorm.DB) (correctAnswers uint) {
+	processedAnswers := make(chan Useranswer)
 	correct := make(chan bool)
-	userAnswer := UserAnswer{UserID: results.UserID}
 	maxAnswers := len(results.Questions)
 	for _, question := range results.Questions {
 		origQuestion := new(Question)
-		orm.DB.First(origQuestion, question.ID)
+		db.First(origQuestion, question.ID)
 
-		userAnswer.QuestionID = question.ID
-		var action CheckAnswerFunc
 		queryChoices := true
+		var userAnswer Useranswer
 		switch origQuestion.Type {
 		case "checkbox":
 			fallthrough
 		case "radio":
-			action = userAnswer.checkByChoiceID
-		case "fillblank":
-			action = userAnswer.checkByString
+			userAnswer = UserChoiceAnswer{UserID: results.UserID, QuestionID: question.ID}
 		case "textarea":
-			action = userAnswer.saveTextAreaAnswer
 			queryChoices = false
+			fallthrough
+		case "fillblank":
+			userAnswer = UserTextAnswer{UserID: results.UserID, QuestionID: question.ID}
 		}
 
 		if queryChoices {
-			origQuestion.QueryChoices(orm)
+			origQuestion.queryChoices(db)
 		}
 
-		maxAnswers += len(question.Answers)
-		go action(*origQuestion, question.Answers, processedAnswers, correct)
+		maxAnswers += len(question.Answer)
+		go userAnswer.save(*origQuestion, question.Answer, processedAnswers, correct)
 	}
 
-	correctAnswers = 0
-	transact := orm.DB.Begin()
+	transact := db.Begin()
 	for i := 0; i < maxAnswers; i++ {
 		select {
 		case userAnswer := <-processedAnswers:
-			if userAnswer.QuestionID != 0 {
+			if userAnswer.validate() {
 				transact.Create(&userAnswer)
 			}
 		case isCorrect := <-correct:
@@ -106,29 +105,30 @@ func (results TestResults) parseAndSaveAnswers(orm ORM) (correctAnswers uint) {
 			}
 		}
 	}
-	transact.Commit()
 	close(processedAnswers)
 	close(correct)
+	transact.Commit()
 	return
 }
 
-func (results TestResults) saveUserTime(orm ORM) {
-	orm.DB.First(&User{}, results.UserID).Update("time_spent", results.TimeSpent)
+func (results quizResults) saveUserTime(db gorm.DB) {
+	db.First(&User{}, results.UserID).Update("time_spent", results.TimeSpent)
 }
 
-func (env Env) AcceptTest(res http.ResponseWriter, req *http.Request, _ httprouter.Params) {
-	orm, err := env.OpenDB()
+// AcceptQuizAnswers accepts a previously registered users answers to the quiz
+func (env Env) AcceptQuizAnswers(res http.ResponseWriter, req *http.Request, _ httprouter.Params) {
+	db, err := env.openDB()
 	if err != nil {
 		http.Error(res, "Something happened", 500)
 		log.Printf("Database opening failed with %v", err)
 		return
 	}
-	defer orm.DB.Close()
+	defer db.Close()
 	dec := json.NewDecoder(req.Body)
-	var results TestResults
+	var results quizResults
 	dec.Decode(&results)
-	correctAnswers := results.parseAndSaveAnswers(*orm)
-	results.saveUserTime(*orm)
+	correctAnswers := results.parseAndSaveAnswers(db)
+	results.saveUserTime(db)
 	enc := json.NewEncoder(res)
 	enc.Encode(map[string]interface{}{
 		"correctAnswers": correctAnswers,
