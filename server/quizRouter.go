@@ -67,7 +67,7 @@ func filterAnswers(answers interface{}) (interface{}, int) {
 	case string:
 		return value, 1
 	case float64:
-		return value, 1
+		return uint(value), 1
 	case []interface{}:
 		var filtered []interface{}
 		for _, answer := range value {
@@ -83,8 +83,7 @@ func filterAnswers(answers interface{}) (interface{}, int) {
 
 func (results quizResults) parseAndSaveAnswers(db *gorm.DB) (correctAnswers int) {
 	processedAnswers := make(chan UserAnswerer)
-	correct := make(chan bool)
-	maxAnswers := len(results.Questions)
+	maxAnswers := 0
 	for _, question := range results.Questions {
 		filtered, count := filterAnswers(question.Answer)
 		if filtered == nil {
@@ -113,24 +112,20 @@ func (results quizResults) parseAndSaveAnswers(db *gorm.DB) (correctAnswers int)
 			origQuestion.queryChoices(db)
 		}
 
-		go userAnswer.Save(origQuestion, filtered, processedAnswers, correct)
+		go func() {
+			if userAnswer.CheckAnswer(origQuestion, filtered) && queryChoices {
+				correctAnswers++
+			}
+		}()
 	}
 
 	transact := db.Begin()
 	for i := 0; i < maxAnswers; i++ {
-		select {
-		case userAnswer := <-processedAnswers:
-			if userAnswer.Validate() {
-				transact.Create(&userAnswer)
-			}
-		case isCorrect := <-correct:
-			if isCorrect {
-				correctAnswers++
-			}
+		if userAnswer := <-processedAnswers; userAnswer.Validate() {
+			transact.Create(&userAnswer)
 		}
 	}
 	close(processedAnswers)
-	close(correct)
 	transact.Commit()
 	return
 }

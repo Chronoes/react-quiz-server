@@ -53,8 +53,10 @@ func (quiz *Quiz) queryQuestions(db *gorm.DB) {
 
 // UserAnswerer defines an uniform way of saving different types of user answers
 type UserAnswerer interface {
-	Save(Question, interface{}, chan<- UserAnswerer, chan<- bool)
+	// CheckAnswer accepts single user answer, checks them against the original question and returns the modified answer
+	CheckAnswer(q Question, answer interface{}) UserAnswerer
 	Validate() bool
+	IsCorrect() bool
 }
 
 // UserChoiceAnswer is the database model for choice-based user answers

@@ -1,6 +1,9 @@
 package server
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func TestChoiceAnswer(t *testing.T) {
 	question := Question{
@@ -47,11 +50,9 @@ func TestChoiceVerification(t *testing.T) {
 	}
 
 	userAnswer := UserChoiceAnswer{}
-	if !userAnswer.verifyAnswer(question, 3.0) {
-		t.Error("Type casting has failed for valid answer type float")
-	}
-
-	if userAnswer.ChoiceID != 3 || !userAnswer.Correct.Valid {
+	if !userAnswer.verifyAnswer(question, uint(3)) {
+		t.Error("Type casting has failed for valid answer type uint")
+	} else if userAnswer.ChoiceID != 3 || !userAnswer.Correct.Valid {
 		t.Error("Answer parameters were not set correctly")
 	}
 
@@ -84,4 +85,32 @@ func TestStringVerification(t *testing.T) {
 	if userAnswerFail.verifyAnswer(question, 13) {
 		t.Error("Type casting failed for invalid answer type int")
 	}
+}
+
+func TestCheckAnswers_Choice(t *testing.T) {
+	question := Question{
+		Type: "checkbox",
+		Choices: []QuestionChoice{
+			QuestionChoice{ID: 1, IsAnswer: false},
+			QuestionChoice{ID: 2, IsAnswer: true},
+			QuestionChoice{ID: 3, IsAnswer: true},
+			QuestionChoice{ID: 4, IsAnswer: false},
+		},
+	}
+
+	processed := make(chan UserAnswerer)
+	userAnswer := UserChoiceAnswer{}
+
+	correct := userAnswer.CheckAnswers(question, []uint{2, 3}, processed)
+	for i := 0; i < 2; i++ {
+		fmt.Printf("Getting answer %d\n", i+1)
+		if _, found := (<-processed).(UserChoiceAnswer); !found {
+			t.Error("Incorrect answer type returned from channel")
+		}
+	}
+	if !correct {
+		t.Error("Answers should be correct but evaluated to false")
+	}
+	close(processed)
+
 }
